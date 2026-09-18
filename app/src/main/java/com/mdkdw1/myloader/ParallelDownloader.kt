@@ -13,6 +13,7 @@ import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.net.URI
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
@@ -20,6 +21,8 @@ class ParallelDownloader(
     private val url: String,
     private val outputFile: File,
     private val chunkCount: Int = 4,
+    private val cookieString: String? = null,
+    private val userAgentOverride: String? = null,
     private val onProgress: (downloaded: Long, total: Long, percent: Int) -> Unit,
     private val onLog: (String) -> Unit,
 ) {
@@ -37,6 +40,28 @@ class ParallelDownloader(
     private val downloaded = AtomicLong(0)
     private val maxRetries = 4
 
+    /** URL에서 자동으로 origin 추출 → Referer 로 사용 */
+    private val referer: String = runCatching {
+        val u = URI(url)
+        "${u.scheme}://${u.host}/"
+    }.getOrDefault(url)
+
+    private fun Request.Builder.browserHeaders(): Request.Builder = apply {
+        header("User-Agent", userAgentOverride ?: UA)
+        header("Accept", "*/*")
+        header("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7")
+        header("Accept-Encoding", "identity")
+        header("Referer", referer)
+        header("Origin", referer.trimEnd('/'))
+        header("Sec-Fetch-Dest", "empty")
+        header("Sec-Fetch-Mode", "cors")
+        header("Sec-Fetch-Site", "same-origin")
+        header("Connection", "keep-alive")
+        if (!cookieString.isNullOrBlank()) {
+            header("Cookie", cookieString)
+        }
+    }
+
     suspend fun start() = coroutineScope {
         val meta = fetchMeta()
         val total = meta.first
@@ -47,24 +72,20 @@ class ParallelDownloader(
             downloadSingle()
             return@coroutineScope
         }
-
         if (!acceptRanges) {
-            onLog("⚠️ 서버가 Range 미지원 → 단일 스트림")
+            onLog("⚠️ Range 미지원 → 단일 스트림")
             downloadSingle()
             return@coroutineScope
         }
 
         onLog("📦 크기: ${total / 1024 / 1024} MB, 청크: $chunkCount")
-
         RandomAccessFile(outputFile, "rw").use { it.setLength(total) }
 
         val partSize = total / chunkCount
         val jobs = (0 until chunkCount).map { i ->
             val start = i * partSize
             val end = if (i == chunkCount - 1) total - 1 else (start + partSize - 1)
-            async(Dispatchers.IO) {
-                downloadChunkWithRetry(i + 1, start, end, total)
-            }
+            async(Dispatchers.IO) { downloadChunkWithRetry(i + 1, start, end, total) }
         }
 
         try {
@@ -79,15 +100,11 @@ class ParallelDownloader(
         }
     }
 
-    /** HEAD → 실패 시 GET Range: bytes=0-0 로 폴백 */
     private suspend fun fetchMeta(): Pair<Long, Boolean> = withContext(Dispatchers.IO) {
         // 1차: HEAD
         runCatching {
-            val req = Request.Builder()
-                .url(url).head()
-                .header("User-Agent", UA)
-                .header("Referer", url)
-                .header("Accept-Encoding", "identity")
+            val req = Request.Builder().url(url).head()
+                .browserHeaders()
                 .build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) error("HEAD HTTP ${resp.code}")
@@ -96,22 +113,19 @@ class ParallelDownloader(
                 onLog("HEAD OK: $total bytes, ranges=$ar")
                 return@withContext total to ar
             }
-        }.onFailure { onLog("HEAD 실패(${it.message}) → GET 시도") }
+        }.onFailure { onLog("HEAD 실패(${it.message}) → GET probe") }
 
-        // 2차: GET Range bytes=0-0
-        val req = Request.Builder()
-            .url(url).get()
-            .header("User-Agent", UA)
-            .header("Referer", url)
+        // 2차: GET Range 0-0
+        val req = Request.Builder().url(url).get()
+            .browserHeaders()
             .header("Range", "bytes=0-0")
-            .header("Accept-Encoding", "identity")
             .build()
         client.newCall(req).execute().use { resp ->
             val code = resp.code
             onLog("GET probe: HTTP $code")
             when (code) {
                 206 -> {
-                    val cr = resp.header("Content-Range")  // bytes 0-0/12345
+                    val cr = resp.header("Content-Range")
                     val total = cr?.substringAfterLast("/")?.toLongOrNull() ?: 0L
                     return@withContext total to true
                 }
@@ -119,28 +133,26 @@ class ParallelDownloader(
                     val total = resp.header("Content-Length")?.toLongOrNull() ?: 0L
                     return@withContext total to false
                 }
+                403 -> {
+                    val body = runCatching { resp.body?.string()?.take(300) }.getOrNull()
+                    onLog("❌ 403 차단됨. body=$body")
+                    onLog("💡 브라우저에서 이 링크를 먼저 열어 쿠키를 받아오거나, 쿠키를 앱에 입력하세요")
+                    error("HTTP 403 (서버가 Referer/Cookie 검증 중)")
+                }
                 else -> {
-                    val preview = runCatching {
-                        resp.body?.string()?.take(200)
-                    }.getOrNull()
-                    error("HTTP $code (body: ${preview?.replace("\n", " ")})")
+                    val body = runCatching { resp.body?.string()?.take(200) }.getOrNull()
+                    error("HTTP $code (body: ${body?.replace("\n", " ")})")
                 }
             }
         }
     }
 
     private suspend fun downloadSingle() = withContext(Dispatchers.IO) {
-        val req = Request.Builder()
-            .url(url)
-            .header("User-Agent", UA)
-            .header("Referer", url)
-            .header("Accept-Encoding", "identity")
+        val req = Request.Builder().url(url).get()
+            .browserHeaders()
             .build()
         client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                val preview = runCatching { resp.body?.string()?.take(200) }.getOrNull()
-                error("HTTP ${resp.code} (body: ${preview})")
-            }
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
             val total = resp.body?.contentLength() ?: -1L
             resp.body!!.byteStream().use { input ->
                 outputFile.outputStream().use { out ->
@@ -163,16 +175,16 @@ class ParallelDownloader(
         while (true) {
             attempt++
             try {
-                onLog("청크 $chunkNo 시작: $start-$end" + if (attempt > 1) " (재시도 $attempt)" else "")
+                onLog("청크 $chunkNo: $start-$end" + if (attempt > 1) " (재시도 $attempt)" else "")
                 downloadChunk(start, end, total)
                 return@withContext
             } catch (e: HttpRetryableException) {
-                if (attempt >= maxRetries) { onLog("청크 $chunkNo 최종 실패(HTTP)"); throw e }
+                if (attempt >= maxRetries) throw e
                 val wait = e.retryAfterMs ?: backoff(attempt)
                 onLog("청크 $chunkNo → HTTP ${e.code}, ${wait}ms 후 재시도")
                 delay(wait)
             } catch (e: IOException) {
-                if (attempt >= maxRetries) { onLog("청크 $chunkNo 최종 실패(IO): ${e.message}"); throw e }
+                if (attempt >= maxRetries) throw e
                 val wait = backoff(attempt)
                 onLog("청크 $chunkNo → IO(${e.message}), ${wait}ms 후 재시도")
                 delay(wait)
@@ -180,27 +192,22 @@ class ParallelDownloader(
         }
     }
 
-    private fun backoff(attempt: Int): Long = when (attempt) {
+    private fun backoff(attempt: Int) = when (attempt) {
         1 -> 500L; 2 -> 1500L; 3 -> 3000L; else -> 5000L
     }
 
     private fun downloadChunk(start: Long, end: Long, total: Long) {
-        val req = Request.Builder()
-            .url(url)
+        val req = Request.Builder().url(url).get()
+            .browserHeaders()
             .header("Range", "bytes=$start-$end")
-            .header("User-Agent", UA)
-            .header("Referer", url)
-            .header("Accept-Encoding", "identity")
-            .header("Connection", "close")
             .build()
 
         client.newCall(req).execute().use { resp ->
             val code = resp.code
             if (code == 429 || code in 500..599) {
-                val retryAfter = resp.header("Retry-After")?.toLongOrNull()?.times(1000)
-                throw HttpRetryableException(code, retryAfter)
+                throw HttpRetryableException(code, resp.header("Retry-After")?.toLongOrNull()?.times(1000))
             }
-            if (!resp.isSuccessful && code != 206) error("청크 실패 HTTP $code")
+            if (!resp.isSuccessful && code != 206) error("청크 HTTP $code")
 
             val body = resp.body ?: throw IOException("empty body")
             val expected = end - start + 1
@@ -217,22 +224,21 @@ class ParallelDownloader(
                         val done = downloaded.addAndGet(n.toLong())
                         reportProgress(done, total)
                     }
-                    if (written != expected) throw IOException("청크 크기 부족 ($written/$expected)")
+                    if (written != expected) throw IOException("크기 부족 ($written/$expected)")
                 }
             }
         }
     }
 
     private fun reportProgress(done: Long, total: Long) {
-        if (total > 0) {
-            val pct = (done * 100 / total).toInt()
-            onProgress(done, total, pct)
-        }
+        if (total > 0) onProgress(done, total, (done * 100 / total).toInt())
     }
 
     private class HttpRetryableException(val code: Int, val retryAfterMs: Long?) : Exception("HTTP $code")
 
     companion object {
-        private const val UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+        private const val UA =
+            "Mozilla/5.0 (Linux; Android 13; SM-G991N) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     }
 }

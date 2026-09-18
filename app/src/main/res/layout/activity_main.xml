@@ -12,22 +12,18 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="🚀 MyLoader 병렬 다운로더"
+            android:text="🚀 MyLoader"
             android:textSize="20sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="4dp" />
+            android:textStyle="bold" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="브라우저에서 공유 또는 링크 열기로 실행 가능"
+            android:text="브라우저에서 링크 공유 → 자동 다운로드"
             android:textSize="12sp"
             android:layout_marginBottom="12dp" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="URL" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="URL" />
 
         <EditText
             android:id="@+id/urlInput"
@@ -40,14 +36,10 @@
             android:id="@+id/pasteBtn"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="📋 클립보드에서 붙여넣기" />
+            android:text="📋 클립보드 붙여넣기" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="파일명" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:text="파일명" />
 
         <EditText
             android:id="@+id/fileNameInput"
@@ -56,18 +48,14 @@
             android:inputType="text"
             android:hint="자동" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="청크 수" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:text="청크 수" />
 
         <EditText
             android:id="@+id/chunkInput"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:inputType="number"
-            android:hint="8" />
+            android:inputType="number" />
 
         <Button
             android:id="@+id/startBtn"
@@ -75,6 +63,12 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
             android:text="다운로드 시작" />
+
+        <Button
+            android:id="@+id/openBtn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="📂 완료된 파일 열기" />
 
         <ProgressBar
             android:id="@+id/progressBar"
