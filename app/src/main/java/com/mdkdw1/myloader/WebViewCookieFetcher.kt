@@ -10,10 +10,6 @@ import android.webkit.WebViewClient
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
-/**
- * WebView로 URL을 로드해서 Cloudflare JS 챌린지를 통과한 뒤
- * 최종 쿠키와 User-Agent를 반환한다.
- */
 object WebViewCookieFetcher {
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -23,7 +19,6 @@ object WebViewCookieFetcher {
             val settings: WebSettings = webView.settings
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
-            settings.userAgentString = settings.userAgentString // keep default (Chrome-like)
             settings.loadsImagesAutomatically = false
             settings.cacheMode = WebSettings.LOAD_NO_CACHE
 
@@ -36,25 +31,30 @@ object WebViewCookieFetcher {
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
                     request: WebResourceRequest,
-                ): Boolean {
-                    // 리다이렉트 그대로 진행
-                    return false
-                }
+                ): Boolean = false
 
                 override fun onPageFinished(view: WebView, loadedUrl: String) {
                     if (finished) return
                     finished = true
 
-                    // 쿠키 수집
-                    val cookies = CookieManager.getInstance().getCookie(loadedUrl) ?: ""
+                    // ★ 원본 URL과 최종 URL 양쪽의 쿠키를 수집
+                    val cm = CookieManager.getInstance()
+                    val originalCookies = cm.getCookie(url) ?: ""
+                    val finalCookies = cm.getCookie(loadedUrl) ?: ""
+                    val merged = (originalCookies + "; " + finalCookies)
+                        .split(";")
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+                        .distinct()
+                        .joinToString("; ")
+
                     val ua = view.settings.userAgentString
 
-                    // WebView 정리
                     view.stopLoading()
                     view.destroy()
 
                     if (cont.isActive) {
-                        cont.resume(Result(loadedUrl, cookies, ua))
+                        cont.resume(Result(url, loadedUrl, merged, ua))
                     }
                 }
             }
@@ -70,6 +70,7 @@ object WebViewCookieFetcher {
     }
 
     data class Result(
+        val originalUrl: String,
         val finalUrl: String,
         val cookie: String,
         val userAgent: String,

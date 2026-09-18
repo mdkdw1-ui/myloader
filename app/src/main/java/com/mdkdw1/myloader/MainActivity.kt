@@ -147,7 +147,7 @@ class MainActivity : AppCompatActivity() {
                 log("저장: ${outFile.absolutePath}")
 
                 val downloader = ParallelDownloader(
-                    url = result.finalUrl.ifBlank { url },
+                    url = result.originalUrl,
                     outputFile = outFile,
                     chunkCount = chunks,
                     cookieString = result.cookie.ifBlank { null },
