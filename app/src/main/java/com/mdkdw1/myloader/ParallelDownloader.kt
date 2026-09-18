@@ -6,7 +6,9 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import java.io.File
 import java.io.IOException
@@ -21,13 +23,14 @@ class ParallelDownloader(
     private val onProgress: (downloaded: Long, total: Long, percent: Int) -> Unit,
     private val onLog: (String) -> Unit,
 ) {
-    // 커넥션 재사용 X (병렬 Range 요청에 안전)
+    // HTTP/1.1 강제 + 커넥션 풀 비활성 (unexpected end of stream 회피)
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
-        .connectionPool(okhttp3.ConnectionPool(0, 1, TimeUnit.MINUTES))
+        .protocols(listOf(Protocol.HTTP_1_1))
+        .connectionPool(ConnectionPool(0, 1, TimeUnit.MINUTES))
         .build()
 
     private val downloaded = AtomicLong(0)
@@ -36,7 +39,7 @@ class ParallelDownloader(
     suspend fun start() = coroutineScope {
         val total = contentLength()
         if (total <= 0) {
-            onLog("⚠️ Content-Length 없음 → 단일 스트림 다운로드")
+            onLog("⚠️ Content-Length 없음 → 단일 스트림")
             downloadSingle()
             return@coroutineScope
         }
@@ -53,8 +56,17 @@ class ParallelDownloader(
                 downloadChunkWithRetry(i + 1, start, end, total)
             }
         }
-        jobs.awaitAll()
-        onLog("✅ 완료: ${outputFile.absolutePath}")
+
+        try {
+            jobs.awaitAll()
+            onLog("✅ 완료: ${outputFile.absolutePath}")
+        } catch (e: Exception) {
+            onLog("⚠️ 병렬 실패(${e.message}) → 단일 스트림 폴백")
+            outputFile.delete()
+            downloaded.set(0)
+            downloadSingle()
+            onLog("✅ 완료(단일): ${outputFile.absolutePath}")
+        }
     }
 
     private suspend fun contentLength(): Long = withContext(Dispatchers.IO) {
@@ -62,18 +74,22 @@ class ParallelDownloader(
             .url(url)
             .head()
             .header("User-Agent", UA)
-            .header("Accept-Encoding", "identity")   // gzip 금지 (Range 정확성)
+            .header("Accept-Encoding", "identity")
             .build()
         client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("HTTP ${resp.code}")
             val ranges = resp.header("Accept-Ranges")
-            if (ranges != "bytes") onLog("⚠️ 서버가 Range를 지원하지 않을 수 있음")
+            if (ranges != "bytes") onLog("⚠️ Range 미지원 가능")
             resp.header("Content-Length")?.toLongOrNull() ?: 0L
         }
     }
 
     private suspend fun downloadSingle() = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url(url).header("User-Agent", UA).build()
+        val req = Request.Builder()
+            .url(url)
+            .header("User-Agent", UA)
+            .header("Accept-Encoding", "identity")
+            .build()
         client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("HTTP ${resp.code}")
             val total = resp.body?.contentLength() ?: -1L
@@ -113,7 +129,6 @@ class ParallelDownloader(
                 onLog("청크 $chunkNo → HTTP ${e.code}, ${wait}ms 후 재시도")
                 delay(wait)
             } catch (e: IOException) {
-                // unexpected end of stream, timeout 등
                 if (attempt >= maxRetries) {
                     onLog("청크 $chunkNo 최종 실패(IO): ${e.message}")
                     throw e
@@ -138,7 +153,7 @@ class ParallelDownloader(
             .header("Range", "bytes=$start-$end")
             .header("User-Agent", UA)
             .header("Accept-Encoding", "identity")
-            .header("Connection", "close")   // 서버측 연결 재사용 방지
+            .header("Connection", "close")
             .build()
 
         client.newCall(req).execute().use { resp ->
@@ -150,7 +165,7 @@ class ParallelDownloader(
             if (!resp.isSuccessful && code != 206) error("청크 실패 HTTP $code")
 
             val body = resp.body ?: throw IOException("empty body")
-            val expected = (end - start + 1)
+            val expected = end - start + 1
 
             RandomAccessFile(outputFile, "rw").use { raf ->
                 raf.seek(start)
@@ -165,7 +180,7 @@ class ParallelDownloader(
                         reportProgress(done, total)
                     }
                     if (written != expected) {
-                        throw IOException("청크 $start-$end 크기 부족 ($written/$expected)")
+                        throw IOException("청크 크기 부족 ($written/$expected)")
                     }
                 }
             }
@@ -182,7 +197,7 @@ class ParallelDownloader(
     private class HttpRetryableException(
         val code: Int,
         val retryAfterMs: Long?,
-    ) : Exception("HTTP $code (재시도 가능)")
+    ) : Exception("HTTP $code")
 
     companion object {
         private const val UA = "Mozilla/5.0 (Linux; Android) MyLoader/1.0"
