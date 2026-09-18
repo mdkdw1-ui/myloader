@@ -12,9 +12,16 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="🚀 병렬 다운로더"
+            android:text="🚀 MyLoader 병렬 다운로더"
             android:textSize="20sp"
             android:textStyle="bold"
+            android:layout_marginBottom="4dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="브라우저에서 공유 또는 링크 열기로 실행 가능"
+            android:textSize="12sp"
             android:layout_marginBottom="12dp" />
 
         <TextView
@@ -29,6 +36,13 @@
             android:inputType="textUri"
             android:hint="https://..." />
 
+        <Button
+            android:id="@+id/pasteBtn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="📋 클립보드에서 붙여넣기" />
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -40,13 +54,13 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:inputType="text"
-            android:hint="test.bin" />
+            android:hint="자동" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="청크 수 (4~16 권장)" />
+            android:text="청크 수" />
 
         <EditText
             android:id="@+id/chunkInput"
@@ -79,17 +93,10 @@
             android:textStyle="bold" />
 
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="📋 로그"
-            android:textStyle="bold" />
-
-        <TextView
             android:id="@+id/logText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginTop="12dp"
             android:background="#11000000"
             android:padding="8dp"
             android:fontFamily="monospace"
