@@ -1,13 +1,11 @@
 package com.mdkdw1.myloader
 
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.widget.Button
-import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
@@ -24,11 +22,7 @@ import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var urlInput: EditText
-    private lateinit var chunkInput: EditText
-    private lateinit var fileNameInput: EditText
-    private lateinit var startBtn: Button
-    private lateinit var pasteBtn: Button
+    private lateinit var startBrowserBtn: Button
     private lateinit var openBtn: Button
     private lateinit var progressBar: ProgressBar
     private lateinit var statusText: TextView
@@ -40,28 +34,15 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        urlInput = findViewById(R.id.urlInput)
-        chunkInput = findViewById(R.id.chunkInput)
-        fileNameInput = findViewById(R.id.fileNameInput)
-        startBtn = findViewById(R.id.startBtn)
-        pasteBtn = findViewById(R.id.pasteBtn)
+        startBrowserBtn = findViewById(R.id.startBrowserBtn)
         openBtn = findViewById(R.id.openBtn)
         progressBar = findViewById(R.id.progressBar)
         statusText = findViewById(R.id.statusText)
         logText = findViewById(R.id.logText)
 
-        chunkInput.setText("8")
-
-        startBtn.setOnClickListener {
-            val url = urlInput.text.toString().trim()
-            if (url.isBlank()) { log("⚠️ URL 없음"); return@setOnClickListener }
-            val chunks = chunkInput.text.toString().toIntOrNull() ?: 8
-            val name = fileNameInput.text.toString().ifBlank { guessName(url) }
-            fileNameInput.setText(name)
-            startDownload(url, name, chunks)
+        startBrowserBtn.setOnClickListener {
+            startActivity(Intent(this, BrowserActivity::class.java))
         }
-
-        pasteBtn.setOnClickListener { pasteFromClipboard() }
         openBtn.setOnClickListener { openLastFile() }
         openBtn.isEnabled = false
 
@@ -76,43 +57,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleIntent(intent: Intent?) {
         intent ?: return
+
+        // 내부 브라우저가 다운로드를 감지해서 넘겨준 경우
+        if (intent.action == "com.mdkdw1.myloader.DOWNLOAD") {
+            val url = intent.getStringExtra("url") ?: return
+            val cookie = intent.getStringExtra("cookie")
+            val ua = intent.getStringExtra("userAgent")
+            val name = intent.getStringExtra("fileName") ?: guessName(url)
+            log("📥 브라우저 감지: $name")
+            log("URL: $url")
+            startDownload(url, name, 8, cookie, ua)
+            return
+        }
+
+        // 외부 공유/링크 열기
         val raw = when (intent.action) {
             Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
             Intent.ACTION_VIEW -> intent.dataString
             else -> null
         } ?: return
-
-        val url = extractUrl(raw) ?: raw.trim()
-        if (!url.startsWith("http")) return
-
-        urlInput.setText(url)
-        val name = guessName(url)
-        fileNameInput.setText(name)
+        val url = raw.trim().takeIf { it.startsWith("http") } ?: return
         log("🔗 외부 URL: $url")
-        statusText.text = "자동 시작 대기..."
-
-        startBtn.postDelayed({
-            val chunks = chunkInput.text.toString().toIntOrNull() ?: 8
-            startDownload(url, name, chunks)
-        }, 500)
-    }
-
-    private fun extractUrl(text: String): String? {
-        val regex = Regex("""(https?://[^\s"'<>]+)""")
-        return regex.find(text)?.value
-    }
-
-    private fun pasteFromClipboard() {
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val text = cm.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
-        val url = extractUrl(text) ?: text.trim().takeIf { it.startsWith("http") }
-        if (url != null) {
-            urlInput.setText(url)
-            fileNameInput.setText(guessName(url))
-            log("📋 클립보드: $url")
-        } else {
-            Toast.makeText(this, "클립보드에 URL 없음", Toast.LENGTH_SHORT).show()
-        }
+        startDownload(url, guessName(url), 8, null, null)
     }
 
     private fun guessName(url: String): String {
@@ -122,36 +88,34 @@ class MainActivity : AppCompatActivity() {
         } catch (_: Exception) { "download.bin" }
     }
 
-    private fun startDownload(url: String, name: String, chunks: Int) {
-        startBtn.isEnabled = false
+    private fun startDownload(
+        url: String,
+        name: String,
+        chunks: Int,
+        cookie: String?,
+        userAgent: String?,
+    ) {
+        startBrowserBtn.isEnabled = false
         openBtn.isEnabled = false
         progressBar.progress = 0
-        statusText.text = "다운로드 준비 중..."
+        statusText.text = "다운로드 중..."
         logText.text = ""
 
         lifecycleScope.launch {
             try {
-                // 1) WebView로 Cloudflare 등 통과 → 쿠키 & UA 획득
-                log("🌐 WebView 프리패스 시작...")
-                val result = withContext(Dispatchers.Main) {
-                    WebViewCookieFetcher.fetch(this@MainActivity, url)
-                }
-                log("✅ 쿠키 획득: ${result.cookie.take(80)}${if (result.cookie.length > 80) "..." else ""}")
-                log("✅ 최종 URL: ${result.finalUrl}")
-
-                // 2) 병렬 다운로더 실행
                 val dir = withContext(Dispatchers.IO) {
                     File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "").also { it.mkdirs() }
                 }
                 val outFile = File(dir, name)
                 log("저장: ${outFile.absolutePath}")
+                if (!cookie.isNullOrBlank()) log("🍪 쿠키: ${cookie.take(60)}...")
 
                 val downloader = ParallelDownloader(
-                    url = result.originalUrl,
+                    url = url,
                     outputFile = outFile,
                     chunkCount = chunks,
-                    cookieString = result.cookie.ifBlank { null },
-                    userAgentOverride = result.userAgent.ifBlank { null },
+                    cookieString = cookie,
+                    userAgentOverride = userAgent,
                     onProgress = { done, total, pct ->
                         runOnUiThread {
                             progressBar.progress = pct
@@ -171,7 +135,7 @@ class MainActivity : AppCompatActivity() {
                 statusText.text = "❌ 실패"
                 log("에러: ${e.javaClass.simpleName}: ${e.message}")
             } finally {
-                startBtn.isEnabled = true
+                startBrowserBtn.isEnabled = true
             }
         }
     }
@@ -199,7 +163,6 @@ class MainActivity : AppCompatActivity() {
         "mp4" -> "video/mp4"
         "mp3" -> "audio/mpeg"
         "pdf" -> "application/pdf"
-        "txt" -> "text/plain"
         else -> "*/*"
     }
 
