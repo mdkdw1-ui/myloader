@@ -44,9 +44,10 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.statusText)
         logText = findViewById(R.id.logText)
 
+        // 안정적인 테스트 URL
+        urlInput.setText("http://ipv4.download.thinkbroadband.com/100MB.zip")
         chunkInput.setText("4")
-        urlInput.setText("https://speed.cloudflare.com/__down?bytes=104857600")
-        fileNameInput.setText("cf100mb.bin")
+        fileNameInput.setText("tb100mb.zip")
 
         startBtn.setOnClickListener {
             val url = urlInput.text.toString().trim()
