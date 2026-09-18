@@ -1,0 +1,1 @@
+-keep class com.mdkdw1.myloader.** { *; }
